@@ -1,49 +1,7 @@
-function mainGoogleCalendarToGoogleSheet() {
-  const userProperties = PropertiesService.getScriptProperties();
-  const sheetId = userProperties.getProperty('sheetId');
-
-  if (!sheetId) {
-    console.error('Sheet ID is not set in user properties.');
-    return;
-  }
-
-  initializeSheet(); // 시트 초기화
-  syncCalendarEvents(); // 캘린더 이벤트 동기화
-}
-function testNotionAPI() {
-  const userProperties = PropertiesService.getScriptProperties();
-  const notionApiKey = userProperties.getProperty('notionApiKey');
-  const databaseId = userProperties.getProperty('notionDatabaseId');
-
-  const url = `https://api.notion.com/v1/databases/${databaseId}/query`;
-  console.log(url);
-  const headers = {
-    "Authorization": `Bearer ${notionApiKey}`,
-    "Content-Type": "application/json",
-    "Notion-Version": "2022-06-28",
-  };
-
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    headers: headers,
-    payload: JSON.stringify({}),
-    muteHttpExceptions: true, // 에러 전체 확인
-  };
-
-  try {
-    const response = UrlFetchApp.fetch(url, options);
-    Logger.log(response.getContentText()); // 응답 출력
-  } catch (err) {
-    Logger.log(`Error: ${err.message}`);
-  }
-}
-
 function main(){
   syncNotionToGoogleCalendar();
   syncGoogleCalendarToNotion();
 }
-
 
 // notion to gc
 function syncNotionToGoogleCalendar() {
@@ -103,7 +61,8 @@ function syncNotionToGoogleCalendar() {
         // description: properties?.Description?.rich_text?.[0]?.plain_text || null,
         description: properties?.Summary?.rich_text?.[0]?.plain_text || null, // Use Notion Summary for description
         eventId: properties?.["Event ID"]?.rich_text?.[0]?.plain_text || null,
-        calendarId: properties?.["Calendar ID"]?.rich_text?.[0]?.plain_text || null,
+        // calendarId: properties?.["Calendar ID"]?.rich_text?.[0]?.plain_text || 'primary',
+        calendarId: properties?.["Calendar ID"]?.select?.name || 'primary', // Google Calendar ID (select 타입)
         lastSync: properties?.["Last Sync"]?.date?.start || null,
         lastEditedTime: task.last_edited_time, // Built-in property
         etag: properties?.["Calendar Etag"]?.rich_text?.[0]?.plain_text || null,
@@ -115,62 +74,81 @@ function syncNotionToGoogleCalendar() {
 
     // Google Calendar 동기화
     calendarIds.forEach((calendarId) => {
-      const calendarEvents = Calendar.Events.list(calendarId, getOptions()).items || [];
+      // const calendarEvents = Calendar.Events.list(calendarId, getOptions()).items || [];
+      const calendarEvents = fetchAllCalendarEvents(calendarId, getOptions()); // 모든 Google Calendar 이벤트 가져오기
       const existingEventIds = getExistingGcalEventIds(calendarId);
 
       tasks.forEach((task) => {
         Logger.log(`Processing Task: ${JSON.stringify(task)}`);
 
-        // Task의 Last Sync와 Google Calendar의 업데이트된 시간 비교 전 로그
-        Logger.log(`Task Last Sync: ${task.lastSync}`);
-        const event = calendarEvents.find(e => e.id === task.eventId);
-        Logger.log(`Event Updated Time: ${event?.updated || 'Not Found'}`);
+        // // Task의 Last Sync와 Google Calendar의 업데이트된 시간 비교 전 로그
+        // Logger.log(`Task Last Sync: ${task.lastSync}`);
+        // const event = calendarEvents.find(e => e.id === task.eventId);
+        // Logger.log(`Event Updated Time: ${event?.updated || 'Not Found'}`);
 
-        // if (task.lastSync && isSyncTimeEqual(task.lastSync, calendarEvents, task.eventId)) {
+        
+        // if (shouldSkipTask(task.lastSync, task.lastEditedTime, event?.etag, task.etag)) {
         //   Logger.log(`Skipping task ${task.name} as it is already up-to-date.`);
         //   return;
         // }
 
-        // if (shouldSkipTask(task.lastSync, task.lastEditedTime, task.name)) {
-        //   return;
+        // const eventKey = `${task.calendarId}:${task.eventId}`;
+
+        // if (task.eventId && existingEventIds.has(task.eventId)) {
+        //   const event = {
+        //     summary: task.name,
+        //     description: task.description,
+        //     location: task.location,
+        //     start: task.start,
+        //     end: task.end,
+        //   };
+
+        //   const updatedEvent = Calendar.Events.update(event, calendarId, task.eventId);
+        //   const now = new Date().toISOString();
+        //   updateNotionLastSync(task.id, now, notionHeaders);
+        //   updateNotionEventId(task.id, updatedEvent.id, notionHeaders);
+        //   updateNotionEtag(task.id, updatedEvent.etag, notionHeaders);
+        //   Logger.log(`Updated event in calendar ${calendarId}: ${updatedEvent.id}`);
+        // } else {
+        //   const event = {
+        //     summary: task.name,
+        //     description: task.description,
+        //     location: task.location,
+        //     start: task.start,
+        //     end: task.end,
+        //   };
+        //   const createdEvent = Calendar.Events.insert(event, calendarId);
+        //   task.eventId = createdEvent.id;
+        //   task.calendarId = calendarId;
+        //   const now = new Date().toISOString();
+        //   updateNotionLastSync(task.id, now, notionHeaders);
+        //   updateNotionEventId(task.id, createdEvent.id, notionHeaders);
+        //   updateNotionEtag(task.id, createdEvent.etag, notionHeaders);
+        //   Logger.log(`Inserted new event in calendar ${calendarId}: ${createdEvent.id}`);
         // }
+        if (task.eventId && task.calendarId) {
+          const eventKey = `${task.calendarId}:${task.eventId}`;
+          if (existingEventIds.has(eventKey)) {
+            Logger.log(`Found matching event for Task ID ${task.id} in Calendar ID ${task.calendarId}`);
+            const event = calendarEvents.find(e => e.id === task.eventId);
 
-        if (shouldSkipTask(task.lastSync, task.lastEditedTime, event?.etag, task.etag)) {
-          Logger.log(`Skipping task ${task.name} as it is already up-to-date.`);
-          return;
-        }
+            if (shouldSkipTask(task.lastSync, task.lastEditedTime, event?.etag, task.etag)) {
+              Logger.log(`Skipping Task ID ${task.id} as it is already up-to-date.`);
+              return;
+            }
 
-        if (task.eventId && existingEventIds.has(task.eventId)) {
-          const event = {
-            summary: task.name,
-            description: task.description,
-            location: task.location,
-            start: task.start,
-            end: task.end,
-          };
-
-          const updatedEvent = Calendar.Events.update(event, calendarId, task.eventId);
-          const now = new Date().toISOString();
-          updateNotionLastSync(task.id, now, notionHeaders);
-          updateNotionEventId(task.id, updatedEvent.id, notionHeaders);
-          updateNotionEtag(task.id, updatedEvent.etag, notionHeaders);
-          Logger.log(`Updated event in calendar ${calendarId}: ${updatedEvent.id}`);
+            // Google Calendar 이벤트 업데이트
+            const updatedEvent = updateGoogleCalendarEvent(task.calendarId, task);
+            updateNotionTaskAfterSync(task, notionHeaders, updatedEvent);
+            Logger.log(`Updated event in Calendar ID ${task.calendarId}: ${updatedEvent.id}`);
+          } else {
+            Logger.log(`Event ID ${task.eventId} not found in Calendar ID ${task.calendarId}`);
+          }
         } else {
-          const event = {
-            summary: task.name,
-            description: task.description,
-            location: task.location,
-            start: task.start,
-            end: task.end,
-          };
-          const createdEvent = Calendar.Events.insert(event, calendarId);
-          task.eventId = createdEvent.id;
-          task.calendarId = calendarId;
-          const now = new Date().toISOString();
-          updateNotionLastSync(task.id, now, notionHeaders);
-          updateNotionEventId(task.id, createdEvent.id, notionHeaders);
-          updateNotionEtag(task.id, createdEvent.etag, notionHeaders);
-          Logger.log(`Inserted new event in calendar ${calendarId}: ${createdEvent.id}`);
+          Logger.log(`Creating new event for Task ID ${task.id} in Calendar ID ${calendarId}`);
+          const newEvent = createGoogleCalendarEvent(calendarId, task);
+          updateNotionTaskAfterSync(task, notionHeaders, newEvent);
+          Logger.log(`Created new event in Calendar ID ${calendarId}: ${newEvent.id}`);
         }
       });
     });
@@ -178,9 +156,130 @@ function syncNotionToGoogleCalendar() {
     // 동기화 완료 시간 업데이트
     // scriptProperties.setProperty('lastSyncTime', new Date().toISOString());
   } catch (err) {
-    console.error(`Error during sync: ${err.message}`);
+    console.error(`Error during sync (syncNotionToGoogleCalendar): ${err.message}`);
   }
 }
+
+// Create a new Google Calendar event
+function createGoogleCalendarEvent(calendarId, task) {
+  try {
+    const event = {
+      summary: task.name, // 이벤트 제목
+      description: task.description, // 이벤트 설명
+      location: task.location, // 이벤트 위치
+    };
+
+    // 시작과 종료 값 처리
+    if (task.start && task.end) {
+      if (task.start.date && task.end.date) {
+        // 둘 다 `date` 형식일 경우
+        event.start = { date: task.start.date };
+        event.end = { date: task.end.date };
+      } else if (task.start.dateTime && task.end.dateTime) {
+        // 둘 다 `dateTime` 형식일 경우
+        event.start = { dateTime: task.start.dateTime };
+        event.end = { dateTime: task.end.dateTime };
+      } else {
+        throw new Error(
+          "Start and end times must both be either `date` or `dateTime`."
+        );
+      }
+    } else {
+      throw new Error("Start and end times are required.");
+    }
+
+    const createdEvent = Calendar.Events.insert(event, calendarId); // 새 이벤트 생성
+    Logger.log(`Successfully created event: ${createdEvent.id} in Calendar ID: ${calendarId}`);
+    return createdEvent; // 생성된 이벤트 반환
+  } catch (error) {
+    Logger.log(`Failed to create event in Calendar ID: ${calendarId}, Error: ${error.message}`);
+    throw error; // 에러를 상위 호출자로 전달
+  }
+}
+
+
+
+function updateNotionTaskAfterSync(task, headers, syncedEvent) {
+  if (!syncedEvent) {
+    Logger.log(`No syncedEvent provided for task ${task.id}. Skipping updates.`);
+    return; // syncedEvent가 없으면 동기화를 중단
+  }
+
+  try {
+    const notionUpdateUrl = `https://api.notion.com/v1/pages/${task.id}`;
+    const properties = {
+      "Last Sync": {
+        date: { start: new Date().toISOString() }, // 동기화 시점 갱신
+      },
+      "Event ID": {
+        rich_text: [{ text: { content: syncedEvent.id } }], // Google Calendar Event ID
+      },
+      "Calendar ID": {
+        select: { name: syncedEvent.calendarId || 'primary' }, // Google Calendar ID를 select 유형으로 전달
+      },
+      "Calendar Etag": {
+        rich_text: [{ text: { content: syncedEvent.etag || '' } }], // Google Calendar Etag
+      },
+    };
+
+    const payload = { properties };
+
+    const response = UrlFetchApp.fetch(notionUpdateUrl, {
+      method: 'patch',
+      contentType: 'application/json',
+      headers,
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+
+    if (response.getResponseCode() === 200) {
+      Logger.log(`Successfully updated Notion Task ID: ${task.id}`);
+    } else {
+      Logger.log(`Failed to update Notion Task ID: ${task.id}, Response: ${response.getContentText()}`);
+    }
+  } catch (error) {
+    Logger.log(`Error updating Notion Task ID: ${task.id}, Error: ${error.message}`);
+    throw error; // 에러를 상위 호출자로 전달
+  }
+}
+
+// Update an existing Google Calendar event
+function updateGoogleCalendarEvent(calendarId, task) {
+  try {
+    const event = {
+      summary: task.name, // 이벤트 제목
+      description: task.description, // 이벤트 설명
+      location: task.location, // 이벤트 위치
+    };
+
+    // 시작과 종료 값 처리
+    if (task.start && task.end) {
+      if (task.start.date && task.end.date) {
+        // 둘 다 `date` 형식일 경우
+        event.start = { date: task.start.date };
+        event.end = { date: task.end.date };
+      } else if (task.start.dateTime && task.end.dateTime) {
+        // 둘 다 `dateTime` 형식일 경우
+        event.start = { dateTime: task.start.dateTime };
+        event.end = { dateTime: task.end.dateTime };
+      } else {
+        throw new Error(
+          "Start and end times must both be either `date` or `dateTime`."
+        );
+      }
+    } else {
+      throw new Error("Start and end times are required.");
+    }
+
+    const updatedEvent = Calendar.Events.update(event, calendarId, task.eventId); // 이벤트 업데이트
+    Logger.log(`Successfully updated event: ${updatedEvent.id} in Calendar ID: ${calendarId}`);
+    return updatedEvent; // 업데이트된 이벤트 반환
+  } catch (error) {
+    Logger.log(`Failed to update event in Calendar ID: ${calendarId}, Event ID: ${task.eventId}, Error: ${error.message}`);
+    throw error; // 에러를 상위 호출자로 전달
+  }
+}
+
 
 
 function shouldSkipTask(lastSync, lastEditedTime, eventEtag, taskEtag) {
@@ -253,29 +352,30 @@ function updateNotionEtag(pageId, etag, headers) {
   }
 }
 
-
 function getExistingGcalEventIds(calendarId) {
-  const calendarEvents = Calendar.Events.list(calendarId,getOptions()).items || [];
-  Logger.log(`Calendar Events: ${JSON.stringify(calendarEvents)}`);
+  const calendarEvents = Calendar.Events.list(calendarId, getOptions()).items || [];
+  Logger.log(`Calendar Events for Calendar ID ${calendarId}: ${JSON.stringify(calendarEvents)}`);
 
-  // Safely map `id` values
+  // Safely map `calendarId:eventId` values
   const existingEventIds = new Set(
     calendarEvents
       .map((event) => {
         if (event.id) {
-          Logger.log(`Found Event ID: ${event.id}`);
-          return event.id;
+          const eventKey = `${calendarId}:${event.id}`; // Combine Calendar ID and Event ID
+          Logger.log(`Found Event Key: ${eventKey}`);
+          return eventKey;
         } else {
-          Logger.log(`Event without ID: ${JSON.stringify(event)}`);
+          Logger.log(`Event without ID in Calendar ${calendarId}: ${JSON.stringify(event)}`);
           return null;
         }
       })
-      .filter(Boolean) // Remove null or undefined IDs
+      .filter(Boolean) // Remove null or undefined keys
   );
 
-  Logger.log(`Existing Event IDs: ${[...existingEventIds]}`);
+  Logger.log(`Existing Event Keys for Calendar ID ${calendarId}: ${[...existingEventIds]}`);
   return existingEventIds;
 }
+
 
 function getOptions(){
   // Calculate the date range: 30 days ago to today
@@ -331,14 +431,12 @@ function syncGoogleCalendarToNotion(forceSync = false) {
       const existingNotionEventIds = new Set(
         notionTasks.map((task) => task.eventId).filter(Boolean)
       );
-      const existingCalendarEventIds = new Set(calendarEvents.map((event) => event.id).filter(Boolean));
+      // const existingCalendarEventIds = new Set(calendarEvents.map((event) => event.id).filter(Boolean));
 
-      // 새롭게 추가된 Notion 작업 처리
-      handleNewNotionTasks(notionTasks, calendarId, notionHeaders);
       // Google Calendar에 없는 Notion 작업 삭제 처리
-      handleNotionTaskDeletion(notionTasks, existingCalendarEventIds, calendarOptions, backupFolderId, notionHeaders);
+      handleNotionTaskDeletion(notionTasks, calendarEvents, calendarOptions, backupFolderId, notionHeaders);
       // Notion에 없는 Google Calendar 이벤트 삭제 처리
-      handleCalendarEventDeletion(calendarEvents, notionTasks, calendarOptions, backupFolderId, calendarId);
+      // handleCalendarEventDeletion(calendarEvents, notionTasks, calendarOptions, backupFolderId, calendarId);
 
       calendarEvents.forEach((event) => {
         const eventId = event.id;
@@ -360,9 +458,44 @@ function syncGoogleCalendarToNotion(forceSync = false) {
       });
     });
   } catch (err) {
-    console.error(`Error during sync: ${err.message}`);
+    console.error(`Error during sync (syncGoogleCalendarToNotion): ${err.message}`);
   }
 }
+
+function testDeletedGC(){
+  listDeletedEvents('primary');
+}
+function listDeletedEvents(calendarId) {
+    const now = new Date();
+  const past = new Date(now);
+  const future = new Date(now);
+
+  past.setDate(now.getDate() - 30); // 30일 전
+  future.setDate(now.getDate() + 30); // 30일 후
+
+  const options = {
+    timeMin: past.toISOString(), // 30일 전부터
+    timeMax: future.toISOString(), // 30일 후까지
+    showDeleted: true, // 삭제된 이벤트 포함
+    singleEvents: true, // 반복 이벤트를 각각 가져옴
+    orderBy: "startTime", // 시작 시간 기준 정렬
+  };
+
+  const response = Calendar.Events.list(calendarId, options);
+  const events = response.items;
+
+  if (events.length === 0) {
+    Logger.log("No events found.");
+    return;
+  }
+
+  events.forEach((event) => {
+    if (event.status === "cancelled") {
+      Logger.log(`Deleted Event Found: ID = ${event.id}, Summary = ${event.summary || "(No Title)"}`);
+    }
+  });
+}
+
 
 // Google Calendar 이벤트를 모두 가져오는 함수
 function fetchAllCalendarEvents(calendarId, calendarOptions) {
@@ -413,6 +546,7 @@ function getNotionTasks(headers, databaseId) {
       eventId: properties?.["Event ID"]?.rich_text?.[0]?.plain_text || null,
       lastSync: properties?.["Last Sync"]?.date?.start || null,
       etag: properties?.["Calendar Etag"]?.rich_text?.[0]?.plain_text || null,
+      calendarId: properties?.["Calendar ID"]?.select?.name || 'primary', // Google Calendar ID (select 타입)
     };
   });
 }
@@ -459,6 +593,11 @@ function updateNotionTaskFromEvent(taskId, event, headers) {
             },
           },
         ],
+      },
+      "Calendar ID": {
+        select: { 
+          name: event.calendarId || 'primary' 
+          }, // Google Calendar ID를 select 유형으로 전달
       },
       "Summary": {
         rich_text: [
@@ -529,6 +668,11 @@ function createNotionTaskFromEvent(event, databaseId, headers) {
             },
           },
         ],
+      },
+      "Calendar ID": {
+        select: { 
+          name: event.calendarId || 'primary' 
+          }, // Google Calendar ID를 select 유형으로 전달
       },
       "Summary": {
         rich_text: [
@@ -602,37 +746,75 @@ function deleteNotionTask(pageId, headers) {
 }
 function deleteGoogleCalendarEvent(calendarId, eventId) {
   try {
+    // Logger.log(`${calendarId}, ${eventId}`);
     Calendar.Events.delete(calendarId, eventId);
-    Logger.log(`Successfully deleted Google Calendar Event ID: ${eventId}`);
+    
+    // const event = CalendarApp.getEventById(eventId);
+    // event.deleteEvent();
+
+    Logger.log(`Successfully deleted Google Calendar Event ID: ${calendarId} ${eventId}`);
   } catch (err) {
-    Logger.log(`Failed to delete Google Calendar Event ID: ${eventId}: ${err.message}`);
+    Logger.log(`Failed to delete Google Calendar Event ID (deleteGoogleCalendarEvent):${calendarId} ${eventId}: ${err.message}`);
   }
 }
 
 function saveToDriveAsJson(filename, data, folderId) {
-  const folder = DriveApp.getFolderById(folderId);
-  const jsonFile = folder.createFile(filename, JSON.stringify(data, null, 2), MimeType.JSON);
-  Logger.log(`Saved backup to Google Drive: ${jsonFile.getUrl()}`);
+  try {
+    if(!folderId){
+      return;
+    }
+    if (!data || typeof data !== "object") {
+      throw new Error("Data to save must be a valid object.");
+    }
+    Logger.log(`${filename}, ${data}, ${folderId}`);
+    const folder = DriveApp.getFolderById(folderId); // 폴더 ID로 Google Drive 폴더 가져오기
+    const jsonFile = folder.createFile(filename, JSON.stringify(data, null, 2), "application/json");//MimeType.JSON); // JSON 파일 생성
+    Logger.log(`Saved backup to Google Drive: ${jsonFile.getUrl()}`); // 저장된 파일 URL 로깅
+  } catch (error) {
+    Logger.log(`Failed to save JSON file to Drive. Filename: ${filename}, Error: ${error.message}`); // 에러 로깅
+    throw error; // 에러를 상위 호출자로 전달
+  }
 }
+function testMimeType() {
+  Logger.log(`MimeType.JSON: ${MimeType.JSON}`);
+}
+
 function deleteGoogleCalendarEventWithBackup(calendarId, eventId, event, folderId) {
   try {
     saveToDriveAsJson(`calendar_event_${eventId}.json`, event, folderId);
+    // Logger.log(`${calendarId}, ${eventId}`);
     Calendar.Events.delete(calendarId, eventId);
-    Logger.log(`Successfully deleted Google Calendar Event ID: ${eventId}`);
+    Logger.log(`Successfully deleted Google Calendar Event ID: ${calendarId} ${eventId}`);
   } catch (err) {
-    Logger.log(`Failed to delete Google Calendar Event ID: ${eventId}: ${err.message}`);
+    Logger.log(`Failed to delete Google Calendar Event ID(deleteGoogleCalendarEventWithBackup): ${calendarId} ${eventId}: ${err.message}`);
   }
 }
 function deleteNotionTaskWithBackup(pageId, task, folderId, headers) {
   try {
     saveToDriveAsJson(`notion_task_${pageId}.json`, task, folderId);
     const notionDeleteUrl = `https://api.notion.com/v1/pages/${pageId}`;
+    Logger.log(`${notionDeleteUrl}`);
+
+    // API 요청 페이로드
+    const payload = {
+      archived: true, // 페이지를 아카이브 처리
+    };
+
+    // API 요청
     const response = UrlFetchApp.fetch(notionDeleteUrl, {
-      method: "delete",
+      method: "patch", // PATCH 메서드 사용
       contentType: "application/json",
       headers,
+      payload: JSON.stringify(payload),
       muteHttpExceptions: true,
     });
+
+    // const response = UrlFetchApp.fetch(notionDeleteUrl, {
+    //   method: "delete",
+    //   contentType: "application/json",
+    //   headers,
+    //   muteHttpExceptions: true,
+    // });
 
     if (response.getResponseCode() !== 200) {
       Logger.log(`Failed to delete Notion Task ${pageId}: ${response.getContentText()}`);
@@ -712,36 +894,119 @@ function restoreAction(){
 }
 
 // Google Calendar에 없는 Notion 작업 삭제 처리
-function handleNotionTaskDeletion(notionTasks, existingCalendarEventIds, calendarOptions, backupFolderId, notionHeaders) {
-  notionTasks.forEach((task) => {
-    if (task.eventId && !existingCalendarEventIds.has(task.eventId)) { // 이벤트 ID가 Google Calendar에 없는 경우
-      if (isWithinSyncRange(task.lastSync, calendarOptions.timeMin, calendarOptions.timeMax)) { // 동기화 범위 내인지 확인
-        Logger.log(`Backing up and deleting Notion Task for missing Calendar Event ID: ${task.eventId}`);
-        saveToDriveAsJson(`notion_task_${task.id}.json`, task, backupFolderId); // 백업
-        deleteNotionTaskWithBackup(task.id, task, backupFolderId, notionHeaders); // Notion 작업 삭제
+// Handle Notion task deletion based on Google Calendar cancelled events
+function handleNotionTaskDeletion(notionTasks, calendarEvents, calendarOptions, backupFolderId, notionHeaders) {
+  // Google Calendar에서 삭제된 이벤트만 필터링
+  const cancelledEvents = calendarEvents.filter(
+    (event) => event.status === "cancelled" // 삭제된 상태인지 확인
+  );
+
+  cancelledEvents.forEach((cancelledEvent) => {
+    const eventId = cancelledEvent.id;
+
+    // Notion 작업 중 삭제된 Google Calendar 이벤트와 일치하는 작업을 찾음
+    const taskToDelete = notionTasks.find((task) => task.eventId === eventId);
+
+    if (taskToDelete) {
+      // 동기화 범위 내인지 확인
+      if (isWithinSyncRange(taskToDelete.lastSync, calendarOptions.timeMin, calendarOptions.timeMax)) {
+        Logger.log(`Backing up and deleting Notion Task for cancelled Calendar Event ID: ${eventId}`);
+
+        // 삭제된 작업을 백업하고 삭제
+        saveToDriveAsJson(`notion_task_${taskToDelete.id}.json`, taskToDelete, backupFolderId);
+        deleteNotionTaskWithBackup(taskToDelete.id, taskToDelete, backupFolderId, notionHeaders);
       } else {
-        Logger.log(`Notion Task ${task.id} is out of sync range, skipping delete.`); // 동기화 범위 밖인 경우 건너뜀
+        Logger.log(`Notion Task ${taskToDelete.id} is out of sync range, skipping delete.`);
       }
+    } else {
+      Logger.log(`No matching Notion Task found for cancelled Calendar Event ID: ${eventId}`);
     }
   });
 }
 
+
 // Notion에 없는 Google Calendar 이벤트 삭제 처리
-function handleCalendarEventDeletion(calendarEvents, notionTasks, calendarOptions, backupFolderId, calendarId) {
+// Notion에 없는 Google Calendar 이벤트 삭제 처리 (archived 조건 기반)
+function handleCalendarEventDeletion(calendarEvents, backupFolderId, calendarId) {
+  const archivedNotionTasks = fetchArchivedNotionTasksWithCustomProperties(); // archived: true 조건으로 Notion 작업 가져오기
+
   calendarEvents.forEach((event) => {
     const eventId = event.id;
 
-    if (!notionTasks.find((task) => task.eventId === eventId)) { // 이벤트 ID가 Notion 작업에 없는 경우
-      if (isWithinSyncRange(event.start?.dateTime || event.start?.date, calendarOptions.timeMin, calendarOptions.timeMax)) { // 동기화 범위 내인지 확인
-        Logger.log(`Backing up and deleting Calendar Event for missing Notion Task: ${eventId}`);
-        saveToDriveAsJson(`calendar_event_${eventId}.json`, event, backupFolderId); // 백업
-        deleteGoogleCalendarEventWithBackup(calendarId, eventId, event, backupFolderId); // Google Calendar 이벤트 삭제
-      } else {
-        Logger.log(`Calendar Event ${eventId} is out of sync range, skipping delete.`); // 동기화 범위 밖인 경우 건너뜀
-      }
+    // archived된 Notion 작업 중에 Google Calendar Event ID와 일치하는 작업이 있는지 확인
+    if (archivedNotionTasks.find((task) => task.eventId === eventId)) {
+      Logger.log(`Backing up and deleting Calendar Event for archived Notion Task: ${eventId}`);
+      saveToDriveAsJson(`calendar_event_${eventId}.json`, event, backupFolderId); // 백업
+      deleteGoogleCalendarEventWithBackup(calendarId, eventId, event, backupFolderId); // Google Calendar 이벤트 삭제
+    } else {
+      Logger.log(`Calendar Event ${eventId} is not associated with an archived Notion Task.`);
     }
   });
 }
+
+// Fetch archived Notion tasks and read Event ID and Calendar ID
+function fetchArchivedNotionTasksWithCustomProperties() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const notionApiKey = scriptProperties.getProperty('notionApiKey'); // Notion API 키
+  const databaseId = scriptProperties.getProperty('notionDatabaseId'); // Notion 데이터베이스 ID
+
+  const notionHeaders = {
+    "Authorization": `Bearer ${notionApiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+
+  const url = `https://api.notion.com/v1/databases/${databaseId}/query`;
+  const payload = {
+    filter: {
+      property: "archived",
+      checkbox: {
+        equals: true,
+      },
+    },
+    sorts: [
+      {
+        timestamp: "last_edited_time",
+        direction: "descending",
+      },
+    ],
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      headers: notionHeaders,
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+
+    const data = JSON.parse(response.getContentText());
+
+    if (!data.results || data.results.length === 0) {
+      Logger.log("No archived tasks found.");
+      return [];
+    }
+
+    const archivedTasks = data.results.map((task) => {
+      const properties = task.properties;
+      return {
+        id: task.id,
+        name: properties?.["Task name"]?.title?.[0]?.plain_text || "(Untitled)",
+        eventId: properties?.["Event ID"]?.rich_text?.[0]?.plain_text || null,
+        // calendarId: properties?.["Calendar ID"]?.rich_text?.[0]?.plain_text || 'primary',
+        calendarId: properties?.["Calendar ID"]?.select?.name || 'primary', // Google Calendar ID (select 타입)
+      };
+    });
+
+    Logger.log(`Archived Tasks: ${JSON.stringify(archivedTasks, null, 2)}`);
+    return archivedTasks;
+  } catch (error) {
+    Logger.log(`Error fetching archived Notion tasks: ${error.message}`);
+    throw error;
+  }
+}
+
 
 // 새롭게 추가된 Notion 작업 처리
 function handleNewNotionTasks(notionTasks, calendarId, notionHeaders) {
@@ -878,6 +1143,416 @@ function updateNotionEventId(pageId, eventId, headers) {
     Logger.log(`Error updating Notion Event ID: ${err.message}`);
   }
 }
+
+// Remove duplicate Google Calendar events by name
+function removeDuplicateEvents(calendarId, eventName, startDate, endDate) {
+  try {
+    const options = {
+      timeMin: new Date(startDate).toISOString(),
+      timeMax: new Date(endDate).toISOString(),
+      showDeleted: false,
+      singleEvents: true,
+      orderBy: 'startTime',
+    };
+
+    const response = Calendar.Events.list(calendarId, options);
+    const events = response.items || [];
+
+    // Filter events by name
+    const duplicateEvents = events.filter(event => event.summary === eventName);
+
+    if (duplicateEvents.length <= 1) {
+      Logger.log(`No duplicates found for event name: ${eventName}`);
+      return;
+    }
+
+    Logger.log(`Found ${duplicateEvents.length} duplicate events for name: ${eventName}`);
+
+    // Sort events by start time to keep the first one
+    duplicateEvents.sort((a, b) => new Date(a.start.dateTime || a.start.date) - new Date(b.start.dateTime || b.start.date));
+
+    // Keep the first event and delete the rest
+    const eventToKeep = duplicateEvents.shift();
+    Logger.log(`Keeping event: ${eventToKeep.id}`);
+
+    duplicateEvents.forEach(event => {
+      try {
+        Calendar.Events.delete(calendarId, event.id);
+        Logger.log(`Deleted duplicate event: ${event.id}`);
+      } catch (error) {
+        Logger.log(`Failed to delete event: ${event.id}, Error: ${error.message}`);
+      }
+    });
+
+    Logger.log(`Completed removing duplicates for event name: ${eventName}`);
+  } catch (error) {
+    Logger.log(`Error during duplicate removal: ${error.message}`);
+  }
+}
+
+// Remove duplicate Google Calendar events automatically by finding duplicate names
+function removeDuplicateEventsAutomatically(calendarId, startDate, endDate) {
+  try {
+    // const options = {
+    //   timeMin: new Date(startDate).toISOString(),
+    //   timeMax: new Date(endDate).toISOString(),
+    //   showDeleted: false,
+    //   singleEvents: true,
+    //   orderBy: 'startTime',
+    // };
+    const options = {
+      timeMin: new Date(startDate).toISOString(),
+      timeMax: new Date(endDate).toISOString(),
+      showDeleted: false,
+      singleEvents: true,
+      orderBy: 'startTime',
+      alwaysIncludeStartDateTime: true // Ensure time-based events are included
+    };
+
+    const response = Calendar.Events.list(calendarId, options);
+    const events = response.items || [];
+
+    // Group events by name
+    const eventsByName = events.reduce((acc, event) => {
+      if (!event.summary) return acc;
+      acc[event.summary] = acc[event.summary] || [];
+      acc[event.summary].push(event);
+      return acc;
+    }, {});
+
+    // Process each group of events
+    Object.keys(eventsByName).forEach(eventName => {
+      const duplicateEvents = eventsByName[eventName];
+
+      if (duplicateEvents.length <= 1) {
+        Logger.log(`No duplicates found for event name: ${eventName}`);
+        return;
+      }
+
+      Logger.log(`Found ${duplicateEvents.length} duplicate events for name: ${eventName}`);
+
+      // Sort events by start time to keep the first one
+      duplicateEvents.sort((a, b) => new Date(a.start.dateTime || a.start.date) - new Date(b.start.dateTime || b.start.date));
+
+      // Keep the first event and delete the rest
+      const eventToKeep = duplicateEvents.shift();
+      Logger.log(`Keeping event: ${eventToKeep.id}`);
+
+      duplicateEvents.forEach(event => {
+        try {
+          // Calendar.Events.delete(calendarId, event.id);
+          Calendar.Events.remove(calendarId, event.id);
+          Logger.log(`Deleted duplicate event: ${event.id}`);
+        } catch (error) {
+          Logger.log(`Failed to delete event: ${event.id}, Error: ${error.message}`);
+        }
+      });
+    });
+
+    Logger.log(`Completed removing duplicates for calendar ID: ${calendarId}`);
+  } catch (error) {
+    Logger.log(`Error during duplicate removal: ${error.message}`);
+  }
+}
+
+// Example usage
+function removeDuplicatesExample() {
+  const calendarId = 'primary'; // Replace with your calendar ID
+  const startDate = '2024-11-17'; // Replace with the desired start date
+  const endDate = '2025-01-04'; // Replace with the desired end date
+
+
+  removeDuplicateEventsAutomatically(calendarId, startDate, endDate);
+}
+
+// Function to remove Notion tasks without a corresponding Google Calendar event
+function removeMismatchedNotionTasks(calendarId, startDate, endDate, notionTasks, notionHeaders) {
+  try {
+    // Define options for fetching events
+    const options = {
+      timeMin: new Date(startDate).toISOString(),
+      timeMax: new Date(endDate).toISOString(),
+      showDeleted: false,
+      singleEvents: true,
+      orderBy: 'startTime',
+    };
+
+    // Fetch events from the calendar
+    const events = Calendar.Events.list(calendarId, options).items || [];
+    Logger.log(`Fetched ${events.length} events from calendar ${calendarId}`);
+
+    // Extract Event IDs from Google Calendar events
+    const googleEventIds = new Set(events.map(event => event.id));
+
+    // Iterate through Notion tasks and remove tasks not matching Google Calendar events
+    notionTasks.forEach((task) => {
+      if (task.eventId && !googleEventIds.has(task.eventId)) { // Event ID가 Google Calendar에 없는 경우
+        try {
+          Logger.log(`Deleting Notion Task for missing Google Calendar Event ID: ${task.eventId} ${task.name}`);
+          deleteNotionTaskWithBackup(task.id, task, null, notionHeaders); // Notion 작업 삭제
+        } catch (error) {
+          Logger.log(`Failed to delete Notion Task ID: ${task.id}, Error: ${error.message}`);
+        }
+      }else{
+        Logger.log(`Notion Task : ${task.eventId} ${task.name}`);
+      }
+    });
+
+    Logger.log('Mismatched Notion task removal completed.');
+  } catch (error) {
+    Logger.log(`Error while removing mismatched Notion tasks: ${error.message}`);
+  }
+}
+
+// Example usage of removeMismatchedNotionTasks
+function exampleRemoveMismatchedTasks() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const notionApiKey = scriptProperties.getProperty('notionApiKey'); // Notion API 키
+  const databaseId = scriptProperties.getProperty('notionDatabaseId'); // Notion 데이터베이스 ID
+  const calendarId = 'primary'; // Google Calendar ID
+  const backupFolderId = scriptProperties.getProperty('backupFolderId'); // Backup folder ID for deleted tasks
+
+  const notionHeaders = {
+    "Authorization": `Bearer ${notionApiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+  Logger.log(`${notionHeaders} ${databaseId}`);
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 30); // 30일 전부터
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() + 30); // 30일 후까지
+
+  // Fetch Notion tasks (example function, replace with actual implementation)
+  const notionTasks = fetchNotionTasks(notionHeaders, databaseId);
+
+  // Remove mismatched tasks
+  removeMismatchedNotionTasks(calendarId, startDate.toISOString(), endDate.toISOString(), notionTasks, notionHeaders);
+}
+
+function fetchNotionTasks(notionHeaders, databaseId) {
+  try {
+    const notionUrl = `https://api.notion.com/v1/databases/${databaseId}/query`;
+    const payload = {
+      sorts: [
+        {
+          timestamp: "last_edited_time",
+          direction: "descending",
+        },
+      ],
+      // filter: {
+      //   property: "archived",
+      //   checkbox: {
+      //     equals: false, // Only fetch non-archived tasks
+      //   },
+      // },
+    };
+
+    const response = UrlFetchApp.fetch(notionUrl, {
+      method: "post",
+      contentType: "application/json",
+      headers: notionHeaders,
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+
+    const notionData = JSON.parse(response.getContentText());
+
+    if (!notionData || !notionData.results) {
+      throw new Error("Invalid or empty response from Notion API.");
+    }
+
+    // Map tasks to include only relevant properties
+    return notionData.results.map((task) => {
+      const properties = task.properties;
+      return {
+        id: task.id,
+        name: properties["Task name"]?.title?.[0]?.plain_text || '(No Title)',
+        eventId: properties["Event ID"]?.rich_text?.[0]?.plain_text || null,
+        // calendarId: properties["Calendar ID"]?.rich_text?.[0]?.plain_text || 'primary',
+        calendarId: properties?.["Calendar ID"]?.select?.name || 'primary', // Google Calendar ID (select 타입)
+        lastSync: properties["Last Sync"]?.date?.start || null,
+      };
+    });
+  } catch (error) {
+    Logger.log(`Error fetching Notion tasks: ${error.message}`);
+    return [];
+  }
+}
+
+// nortion
+function fetchAllNotionTasks() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const notionApiKey = scriptProperties.getProperty('notionApiKey'); // Notion API 키
+  const databaseId = scriptProperties.getProperty('notionDatabaseId'); // Notion 데이터베이스 ID
+
+  // Notion API 헤더 설정
+  const notionHeaders = {
+    "Authorization": `Bearer ${notionApiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+
+  // Notion API 요청 URL
+  const notionUrl = `https://api.notion.com/v1/databases/${databaseId}/query`;
+
+  try {
+    // API 호출
+    const response = UrlFetchApp.fetch(notionUrl, {
+      method: "post",
+      contentType: "application/json",
+      headers: notionHeaders,
+      muteHttpExceptions: true, // 오류 발생 시 코드 중단 방지
+    });
+
+    // 응답 데이터 파싱
+    const notionData = JSON.parse(response.getContentText());
+
+    // 응답 데이터 검증
+    if (!notionData || !notionData.results) {
+      throw new Error("Invalid or empty response from Notion API.");
+    }
+
+    // 작업(Task) 목록 추출 및 로그 출력
+    notionData.results.forEach((task) => {
+      const properties = task.properties;
+      Logger.log(properties);
+      Logger.log(`Task ID: ${task.id}`);
+      Logger.log(`Task Name: ${properties["Task name"]?.title?.[0]?.plain_text || '(Untitled)'}`);
+      Logger.log(`Last Edited Time: ${task.last_edited_time}`);
+      Logger.log(`${task.properties["Location"].rich_text[0].plain_text}`);
+      Logger.log(`Archived: ${properties.archived?.checkbox || false}`);
+      Logger.log(`-------------------------------`);
+    });
+
+    Logger.log(`Total tasks fetched: ${notionData.results.length}`);
+  } catch (error) {
+    Logger.log(`Error fetching Notion tasks: ${error.message}`);
+  }
+}
+
+
+function fetchFilteredAndSortedNotionTasks() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const notionApiKey = scriptProperties.getProperty('notionApiKey'); // Notion API 키
+  const databaseId = scriptProperties.getProperty('notionDatabaseId'); // Notion 데이터베이스 ID
+
+  const notionHeaders = {
+    "Authorization": `Bearer ${notionApiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+
+  const notionUrl = `https://api.notion.com/v1/databases/${databaseId}/query`;
+  Logger.log(notionUrl);
+  
+  const payload = {
+    // 필터 조건 설정
+    filter: {
+      and: [
+        {
+          property: "Status", // 상태 속성
+          status: {
+            equals: "In Progress", // "In Progress" 상태인 작업만 필터링
+          },
+        },
+        {
+          property: "Due", // 마감일 속성
+          date: {
+            on_or_after: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString(),//new Date().toISOString(), // 오늘 이후 마감일인 작업만 필터링
+          },
+        },
+      ],
+    },
+    // 정렬 조건 설정
+    sorts: [
+      {
+        property: "Due", // 마감일 기준
+        direction: "ascending", // 오름차순 정렬
+      },
+      {
+        timestamp: "last_edited_time", // 마지막 편집 시간 기준
+        direction: "descending", // 내림차순 정렬
+      },
+    ],
+  };
+  Logger.log(payload);
+  
+  try {
+    const response = UrlFetchApp.fetch(notionUrl, {
+      method: "post",
+      contentType: "application/json",
+      headers: notionHeaders,
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+
+    Logger.log(response);
+
+    const notionData = JSON.parse(response.getContentText());
+
+    if (!notionData || !notionData.results) {
+      throw new Error("Invalid or empty response from Notion API.");
+    }
+
+    Logger.log(`Filtered and Sorted Tasks: ${notionData.results.length}`);
+
+    // 작업(Task) 목록 출력
+    notionData.results.forEach((task) => {
+      const properties = task.properties;
+      Logger.log(`Task ID: ${task.id}`);
+      Logger.log(`Task Name: ${properties["Task name"]?.title?.[0]?.plain_text || '(No Title)'}`);
+      Logger.log(`Status: ${properties.Status?.select?.name || 'No Status'}`);
+      Logger.log(`Due Date: ${properties.Due?.date?.start || 'No Due Date'}`);
+      Logger.log(`Last Edited: ${task.last_edited_time}`);
+      Logger.log(`-------------------------------`);
+    });
+  } catch (error) {
+    Logger.log(`Error fetching filtered and sorted Notion tasks: ${error.message}`);
+  }
+}
+
+function mainGoogleCalendarToGoogleSheet() {
+  const userProperties = PropertiesService.getScriptProperties();
+  const sheetId = userProperties.getProperty('sheetId');
+
+  if (!sheetId) {
+    console.error('Sheet ID is not set in user properties.');
+    return;
+  }
+
+  initializeSheet(); // 시트 초기화
+  syncCalendarEvents(); // 캘린더 이벤트 동기화
+}
+function testNotionAPI() {
+  const userProperties = PropertiesService.getScriptProperties();
+  const notionApiKey = userProperties.getProperty('notionApiKey');
+  const databaseId = userProperties.getProperty('notionDatabaseId');
+
+  const url = `https://api.notion.com/v1/databases/${databaseId}/query`;
+  console.log(url);
+  const headers = {
+    "Authorization": `Bearer ${notionApiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    headers: headers,
+    payload: JSON.stringify({}),
+    muteHttpExceptions: true, // 에러 전체 확인
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    Logger.log(response.getContentText()); // 응답 출력
+  } catch (err) {
+    Logger.log(`Error: ${err.message}`);
+  }
+}
+
 
 // google sheet
 function syncCalendarEvents() {
